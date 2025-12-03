@@ -62,30 +62,88 @@ INDUSTRIES = {
 
 @st.cache_data(ttl=3600)
 def fetch_financials(ticker):
-    """Fetch quarterly financial data from Yahoo Finance."""
+    """Fetch quarterly financial data from Yahoo Finance with comprehensive field name alternatives."""
     try:
         company = yf.Ticker(ticker)
         bs = company.quarterly_balance_sheet.iloc[:, 0]
         inc = company.quarterly_financials.iloc[:, 0]
         
+        # Helper function to try multiple field names
+        def get_field(source, field_names, default=0):
+            """Try multiple field name variations and return the first non-zero value found."""
+            for field in field_names:
+                value = source.get(field, None)
+                if value is not None and value != 0:
+                    return value, field
+            return default, None
+        
+        # Try multiple field name variations for each variable
+        total_assets, ta_field = get_field(bs, [
+            'Total Assets', 'TotalAssets'
+        ])
+        
+        current_assets, ca_field = get_field(bs, [
+            'Current Assets', 'CurrentAssets'
+        ])
+        
+        current_liabilities, cl_field = get_field(bs, [
+            'Current Liabilities', 'CurrentLiabilities'
+        ])
+        
+        retained_earnings, re_field = get_field(bs, [
+            'Retained Earnings', 'RetainedEarnings', 'Accumulated Deficit'
+        ])
+        
+        ebit, ebit_field = get_field(inc, [
+            'EBIT', 'Operating Income', 'OperatingIncome', 
+            'Earnings Before Interest And Taxes'
+        ])
+        
+        total_liabilities, tl_field = get_field(bs, [
+            'Total Liabilities Net Minority Interest', 
+            'Total Liabilities', 'TotalLiabilities'
+        ])
+        
+        market_value_equity, mve_field = get_field(bs, [
+            'Common Stock Equity', 'Stockholders Equity', 
+            'StockholdersEquity', 'Total Equity Gross Minority Interest'
+        ])
+        
+        total_revenue, tr_field = get_field(inc, [
+            'Total Revenue', 'TotalRevenue', 'Revenue'
+        ])
+        
+        # Build data dictionary
         data = {
-            'total_assets': bs.get('Total Assets', 0),
-            'current_assets': bs.get('Current Assets', 0),
-            'current_liabilities': bs.get('Current Liabilities', 0),
-            'retained_earnings': bs.get('Retained Earnings', 0),
-            'ebit': inc.get('EBIT', inc.get('Operating Income', 0)),
-            'total_liabilities': bs.get('Total Liabilities Net Minority Interest', 
-                                       bs.get('Total Liabilities', 0)),
-            'market_value_equity': bs.get('Common Stock Equity', 
-                                         bs.get('Stockholders Equity', 0)),
-            'total_revenue': inc.get('Total Revenue', 0)
+            'total_assets': total_assets,
+            'current_assets': current_assets,
+            'current_liabilities': current_liabilities,
+            'retained_earnings': retained_earnings,
+            'ebit': ebit,
+            'total_liabilities': total_liabilities,
+            'market_value_equity': market_value_equity,
+            'total_revenue': total_revenue
         }
         
-        if data['total_assets'] == 0 or data['total_revenue'] == 0:
-            return None
-        return data
-    except:
-        return None
+        # Build diagnostics dictionary
+        diagnostics = {
+            'total_assets': {'value': total_assets, 'field': ta_field, 'found': ta_field is not None},
+            'current_assets': {'value': current_assets, 'field': ca_field, 'found': ca_field is not None},
+            'current_liabilities': {'value': current_liabilities, 'field': cl_field, 'found': cl_field is not None},
+            'retained_earnings': {'value': retained_earnings, 'field': re_field, 'found': re_field is not None},
+            'ebit': {'value': ebit, 'field': ebit_field, 'found': ebit_field is not None},
+            'total_liabilities': {'value': total_liabilities, 'field': tl_field, 'found': tl_field is not None},
+            'market_value_equity': {'value': market_value_equity, 'field': mve_field, 'found': mve_field is not None},
+            'total_revenue': {'value': total_revenue, 'field': tr_field, 'found': tr_field is not None}
+        }
+        
+        # Check if critical fields are missing
+        if total_assets == 0 or total_revenue == 0:
+            return None, diagnostics
+        
+        return data, diagnostics
+    except Exception as e:
+        return None, {'error': str(e)}
 
 
 def calculate_z_score(data):
@@ -114,6 +172,78 @@ def get_risk_zone(z_score):
     return 'Distress Zone', 'distress-zone', '🔴'
 
 
+def display_data_diagnostics(diagnostics, ticker):
+    """Display data quality diagnostics for fetched financial data."""
+    st.subheader("📋 Data Quality Report")
+    
+    if 'error' in diagnostics:
+        st.error(f"Error fetching data: {diagnostics['error']}")
+        return
+    
+    # Field labels for display
+    field_labels = {
+        'total_assets': 'Total Assets',
+        'current_assets': 'Current Assets',
+        'current_liabilities': 'Current Liabilities',
+        'retained_earnings': 'Retained Earnings',
+        'ebit': 'EBIT',
+        'total_liabilities': 'Total Liabilities',
+        'market_value_equity': 'Market Value of Equity',
+        'total_revenue': 'Total Revenue'
+    }
+    
+    # Create diagnostic table
+    diag_data = []
+    missing_count = 0
+    
+    for key, label in field_labels.items():
+        info = diagnostics[key]
+        if info['found']:
+            status = '✓ Found'
+            status_color = '🟢'
+            field_used = info['field']
+        else:
+            status = '✗ Missing'
+            status_color = '🔴'
+            field_used = 'N/A'
+            missing_count += 1
+        
+        diag_data.append({
+            'Field': label,
+            'Status': f"{status_color} {status}",
+            'Value': f"${info['value']:,.0f}" if info['value'] != 0 else "$0",
+            'Field Name Used': field_used if field_used else 'N/A'
+        })
+    
+    # Display table
+    diag_df = pd.DataFrame(diag_data)
+    st.dataframe(diag_df, use_container_width=True, hide_index=True)
+    
+    # Summary message
+    if missing_count == 0:
+        st.success(f"✓ All 8 required fields found for {ticker}")
+    elif missing_count <= 2:
+        st.warning(f"⚠ {missing_count} field(s) missing for {ticker}. Z-score may be less accurate.")
+    else:
+        st.error(f"✗ {missing_count} field(s) missing for {ticker}. Z-score calculation may be unreliable.")
+    
+    # Helpful tips
+    if missing_count > 0:
+        with st.expander("💡 Why are some fields missing?"):
+            st.markdown("""
+            **Common reasons for missing data:**
+            - Company doesn't report certain metrics publicly
+            - Different accounting standards or reporting formats
+            - Recent IPO or limited financial history
+            - Data not yet available for the most recent quarter
+            
+            **Suggestions:**
+            - Try a different ticker symbol
+            - Check if the company is publicly traded
+            - Use a larger, more established company for more complete data
+            """)
+
+
 @st.cache_data(ttl=3600)
 def get_industry_benchmark(industry, max_companies=8):
     """Fetch live benchmark data from industry companies."""
@@ -125,11 +255,12 @@ def get_industry_benchmark(industry, max_companies=8):
     
     for i, ticker in enumerate(tickers):
         status_text.text(f"Fetching {ticker}...")
-        data = fetch_financials(ticker)
-        if data:
-            result = calculate_z_score(data)
-            if not np.isnan(result['z_score']) and not np.isinf(result['z_score']):
-                z_scores.append(result['z_score'])
+        result = fetch_financials(ticker)
+        if result and result[0]:  # Check if data was fetched successfully
+            data, _ = result  # Unpack tuple, ignore diagnostics for benchmark
+            calc_result = calculate_z_score(data)
+            if not np.isnan(calc_result['z_score']) and not np.isinf(calc_result['z_score']):
+                z_scores.append(calc_result['z_score'])
         progress_bar.progress((i + 1) / len(tickers))
     
     progress_bar.empty()
@@ -164,11 +295,12 @@ def get_custom_benchmark(ticker_string):
     
     for i, ticker in enumerate(tickers):
         status_text.text(f"Fetching {ticker}...")
-        data = fetch_financials(ticker)
-        if data:
-            result = calculate_z_score(data)
-            if not np.isnan(result['z_score']) and not np.isinf(result['z_score']):
-                z_scores.append(result['z_score'])
+        result = fetch_financials(ticker)
+        if result and result[0]:  # Check if data was fetched successfully
+            data, _ = result  # Unpack tuple, ignore diagnostics for benchmark
+            calc_result = calculate_z_score(data)
+            if not np.isnan(calc_result['z_score']) and not np.isinf(calc_result['z_score']):
+                z_scores.append(calc_result['z_score'])
                 successful_tickers.append(ticker)
         progress_bar.progress((i + 1) / len(tickers))
     
@@ -403,18 +535,19 @@ def main():
         
         if st.button("🔍 Lookup", type="primary"):
             with st.spinner(f"Fetching data for {ticker}..."):
-                data = fetch_financials(ticker)
+                result = fetch_financials(ticker)
                 
-                if data:
-                    result = calculate_z_score(data)
-                    z = result['z_score']
+                if result and result[0]:  # Check if data was fetched successfully
+                    data, diagnostics = result  # Unpack tuple
+                    calc_result = calculate_z_score(data)
+                    z = calc_result['z_score']
                     zone, _, emoji = get_risk_zone(z)
                     
                     st.success(f"✓ Data fetched successfully for {ticker}")
                     
                     col1, col2, col3 = st.columns(3)
                     with col1:
-                        st.metric("Z-Score", f"{z:,.0f}")
+                        st.metric("Z-Score", f"{z:,.2f}")
                     with col2:
                         st.metric("Status", f"{emoji} {zone}")
                     with col3:
@@ -423,15 +556,19 @@ def main():
                     st.subheader("Component Scores")
                     comp_col1, comp_col2, comp_col3, comp_col4, comp_col5 = st.columns(5)
                     with comp_col1:
-                        st.metric("X1", f"{result['x1']:,.0f}")
+                        st.metric("X1", f"{calc_result['x1']:.3f}")
                     with comp_col2:
-                        st.metric("X2", f"{result['x2']:,.0f}")
+                        st.metric("X2", f"{calc_result['x2']:.3f}")
                     with comp_col3:
-                        st.metric("X3", f"{result['x3']:,.0f}")
+                        st.metric("X3", f"{calc_result['x3']:.3f}")
                     with comp_col4:
-                        st.metric("X4", f"{result['x4']:,.0f}")
+                        st.metric("X4", f"{calc_result['x4']:.3f}")
                     with comp_col5:
-                        st.metric("X5", f"{result['x5']:,.0f}")
+                        st.metric("X5", f"{calc_result['x5']:.3f}")
+                    
+                    # Display data quality diagnostics
+                    st.markdown("---")
+                    display_data_diagnostics(diagnostics, ticker)
                 else:
                     st.error(f"❌ Could not fetch data for {ticker}. Please check the ticker symbol.")
     
